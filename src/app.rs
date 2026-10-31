@@ -2661,7 +2661,7 @@ impl App {
         if chat.is_group() {
             return chat.name.clone();
         }
-        self.person_name(&chat.id, None)
+        self.person_name_in(&chat.id, None, || Some(chat))
     }
 
     /// The title of the chat `id`, as the chat list writes it, for places that
@@ -2715,6 +2715,18 @@ impl App {
     }
 
     fn person_name(&self, id: &str, hint: Option<&str>) -> String {
+        self.person_name_in(id, hint, || self.chat(id))
+    }
+
+    /// `person_name` for a caller that may already hold the chat: `chat` runs
+    /// only when no contact names the person, as finding one walks the list,
+    /// and search titles every chat in each frame.
+    fn person_name_in<'a>(
+        &'a self,
+        id: &str,
+        hint: Option<&str>,
+        chat: impl FnOnce() -> Option<&'a Chat>,
+    ) -> String {
         let contact = self.contacts.get(id);
         let present = |name: Option<&str>| name.filter(|name| !name.is_empty()).map(str::to_owned);
         let saved = present(contact.and_then(|contact| contact.full_name.as_deref()));
@@ -2731,7 +2743,7 @@ impl App {
         let number = |c: char| {
             c.is_ascii_digit() || (phone.is_some() && matches!(c, '+' | ' ' | '(' | ')' | '-'))
         };
-        if let Some(chat) = self.chat(id)
+        if let Some(chat) = chat()
             && !chat.name.is_empty()
             && !chat.name.chars().all(number)
         {
@@ -3059,12 +3071,13 @@ impl App {
         if needle.is_empty() {
             return Vec::new();
         }
+        let chats: HashSet<&str> = self.chats.iter().map(|chat| chat.id.as_str()).collect();
         let mut contacts: Vec<&Contact> = self
             .contacts
             .values()
             .filter(|contact| crate::model::phone_of(&contact.id).is_some())
             .filter(|contact| self.me.as_deref() != Some(contact.id.as_str()))
-            .filter(|contact| !self.chats.iter().any(|chat| chat.id == contact.id))
+            .filter(|contact| !chats.contains(contact.id.as_str()))
             .filter(|contact| {
                 contact
                     .display_name()
@@ -21537,6 +21550,41 @@ mod tests {
             Some(std::path::Path::new("photo.jpg"))
         );
         assert!(media_requests(&mut commands).is_empty(), "no query for it");
+    }
+
+    #[test]
+    fn a_chat_title_resolves_as_a_person_name_does() {
+        let mut app = app();
+        let saved = "491700000001@s.whatsapp.net";
+        let unsaved = "491700000002@s.whatsapp.net";
+        let number = "491700000003@s.whatsapp.net";
+        app.contacts.insert(
+            saved.into(),
+            crate::model::Contact {
+                id: saved.into(),
+                full_name: Some("Ada Lovelace".into()),
+                ..Default::default()
+            },
+        );
+        for (id, name) in [
+            (saved, "Filed name"),
+            (unsaved, "Grace Hopper"),
+            (number, "491700000003"),
+        ] {
+            app.chats.push(Chat::new(id.into(), name.into()));
+        }
+        for id in [saved, unsaved, number] {
+            let chat = app.chat(id).expect("the chat").clone();
+            assert_eq!(app.chat_title(&chat), app.display_name(id));
+        }
+        let title = |app: &App, id| app.chat_title(app.chat(id).expect("the chat"));
+        assert_eq!(title(&app, saved), "Ada Lovelace");
+        assert_eq!(title(&app, unsaved), "Grace Hopper");
+        assert_eq!(
+            title(&app, number),
+            crate::util::phone("491700000003"),
+            "a name of digits alone is no name"
+        );
     }
 
     #[test]
