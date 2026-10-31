@@ -2360,6 +2360,77 @@ mod tests {
         assert_eq!(buttons(400.0), [NewChat]);
     }
 
+    /// A/B benchmark, not part of the pull request. Synthetic data only.
+    #[test]
+    fn ab_search_frame() {
+        use std::time::{Duration, Instant};
+        let mut report = String::new();
+        let median = |mut samples: Vec<Duration>| {
+            samples.sort();
+            samples[samples.len() / 2].as_secs_f64() * 1000.0
+        };
+        for (chats, contacts) in [(500usize, 2_000usize), (2_000, 10_000), (5_000, 30_000)] {
+            for needle in ["zq", "co"] {
+                let root = tempfile::tempdir().unwrap();
+                let (mut app, _commands) = App::headless(
+                    crate::paths::AppDirs::under(root.path()),
+                    crate::settings::Settings::default(),
+                );
+                let id = |i: usize| format!("55{i:011}@s.whatsapp.net");
+                for i in 0..contacts {
+                    // Odd chats have no saved contact, so their title falls
+                    // through to the chat itself.
+                    if i < chats && i % 2 == 1 {
+                        continue;
+                    }
+                    app.contacts.insert(
+                        id(i),
+                        crate::model::Contact {
+                            id: id(i),
+                            full_name: Some(format!("Contato {i}")),
+                            ..Default::default()
+                        },
+                    );
+                }
+                for i in 0..chats {
+                    app.chats.push(Chat::new(id(i), format!("55{i:011}")));
+                }
+                app.search = needle.into();
+                let mut lists = Vec::new();
+                let mut listed = 0;
+                for _ in 0..7 {
+                    let start = Instant::now();
+                    listed = app.visible_chats().len() + app.matching_contacts().len();
+                    lists.push(start.elapsed());
+                }
+                let ctx = egui::Context::default();
+                let mut frames = Vec::new();
+                for _ in 0..7 {
+                    let start = Instant::now();
+                    let mut output = ctx.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                vec2(420.0, 800.0),
+                            )),
+                            ..Default::default()
+                        },
+                        |ui| show(&mut app, ui),
+                    );
+                    frames.push(start.elapsed());
+                    output.textures_delta.clear();
+                }
+                report.push_str(&format!(
+                    "AB chats={chats} contacts={contacts} needle={needle} listed={listed} lists_ms={:.2} frame_ms={:.2}\n",
+                    median(lists),
+                    median(frames),
+                ));
+            }
+        }
+        // Fails on purpose: only a failing test's output reaches the CI log.
+        panic!("AB-REPORT\n{report}");
+    }
+
     /// The Calls tab's header carries New call, as WhatsApp's Calls pane
     /// does; the new-call list's header and the starred messages' have none.
     #[test]
